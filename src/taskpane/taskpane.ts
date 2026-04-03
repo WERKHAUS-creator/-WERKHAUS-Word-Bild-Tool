@@ -1,5 +1,10 @@
 import * as XLSX from "xlsx";
 
+// ============================================================================
+// BLOCK A - TYPEN UND GLOBALER STATE
+// STABIL: Nur ändern, wenn sich Datenstruktur oder Grundlogik ändert.
+// ============================================================================
+
 type VariableStatus = "not-inserted" | "up-to-date" | "outdated";
 type DateFormatMode = "short" | "long";
 
@@ -11,6 +16,7 @@ type VariableItem = {
   isBlock: boolean;
   usageCount: number;
   status: VariableStatus;
+  colWidthsPx: number[];
 };
 
 type SavedFileMeta = {
@@ -40,23 +46,37 @@ let currentDateFormat: DateFormatMode = "short";
 let currentExcelFile: File | null = null;
 let tableOptionsByVariable: Record<string, TableOptions> = {};
 
+// ============================================================================
+// BLOCK B - START / OFFICE INITIALISIERUNG
+// STABIL: Verkabelung der Buttons und Grundeinstellungen.
+// ============================================================================
+
 Office.onReady(() => {
   const loadButton = document.getElementById("loadExcelButton") as HTMLButtonElement | null;
   const updateAllButton = document.getElementById("updateAllButton") as HTMLButtonElement | null;
   const toggleHighlightButton = document.getElementById("toggleHighlightButton") as HTMLButtonElement | null;
   const dateFormatSelect = document.getElementById("dateFormatSelect") as HTMLSelectElement | null;
 
-  if (loadButton) loadButton.onclick = handleExcelLoad;
-  if (updateAllButton) updateAllButton.onclick = handleUpdateAll;
-  if (toggleHighlightButton) toggleHighlightButton.onclick = toggleHighlight;
+  if (loadButton) {
+    loadButton.onclick = handleExcelLoad;
+  }
+
+  if (updateAllButton) {
+    updateAllButton.onclick = handleUpdateAll;
+  }
+
+  if (toggleHighlightButton) {
+    toggleHighlightButton.onclick = toggleHighlight;
+  }
 
   if (dateFormatSelect) {
     currentDateFormat = (dateFormatSelect.value as DateFormatMode) || "short";
     dateFormatSelect.onchange = async () => {
       currentDateFormat = (dateFormatSelect.value as DateFormatMode) || "short";
+
       if (currentExcelFile) {
         await loadExcelFile(currentExcelFile, false);
-        setStatus("Datumsformat geändert und Excel-Datei neu geladen.");
+        setStatus("Datumsformat geändert und aktuelle Excel-Datei neu geladen.");
       } else {
         setStatus("Datumsformat geändert.");
       }
@@ -67,18 +87,26 @@ Office.onReady(() => {
   renderHighlightButtonState();
 });
 
+// ============================================================================
+// BLOCK C - EXCEL LADEN UND EINLESEN
+// STABIL: Datei laden, Variablen auslesen, Datumsformat neu laden.
+// HINWEIS: Lokale geänderte Dateien müssen in der Praxis meist neu ausgewählt
+// werden. Wenn aktuell im Input eine Datei gewählt ist, wird diese geladen.
+// ============================================================================
+
 async function handleExcelLoad(): Promise<void> {
   const fileInput = document.getElementById("excelFile") as HTMLInputElement | null;
   if (!fileInput) return;
 
-  const file = fileInput.files?.[0];
-  if (!file) {
+  const selectedFile = fileInput.files?.[0] ?? null;
+
+  if (!selectedFile) {
     setStatus("Bitte zuerst eine Excel-Datei auswählen.");
     return;
   }
 
-  currentExcelFile = file;
-  await loadExcelFile(file, true);
+  currentExcelFile = selectedFile;
+  await loadExcelFile(selectedFile, true);
 }
 
 async function loadExcelFile(file: File, saveMeta: boolean): Promise<void> {
@@ -102,7 +130,9 @@ async function loadExcelFile(file: File, saveMeta: boolean): Promise<void> {
       const variableName = String(namedItem.Name ?? "").trim();
       const ref = String(namedItem.Ref ?? "").trim();
 
-      if (!variableName || !ref) continue;
+      if (!variableName || !ref) {
+        continue;
+      }
 
       const resolved = resolveNamedReferenceData(workbook, ref);
 
@@ -114,6 +144,7 @@ async function loadExcelFile(file: File, saveMeta: boolean): Promise<void> {
         isBlock: resolved.isBlock,
         usageCount: 0,
         status: "not-inserted",
+        colWidthsPx: resolved.colWidthsPx,
       });
 
       if (resolved.isBlock && !tableOptionsByVariable[variableName]) {
@@ -133,6 +164,14 @@ async function loadExcelFile(file: File, saveMeta: boolean): Promise<void> {
         fileName: file.name,
         lastLoadedAt: new Date().toLocaleString("de-DE"),
       });
+    } else {
+      const existingMeta = getSavedFileMeta();
+      if (existingMeta) {
+        await saveLinkedFileMeta({
+          fileName: existingMeta.fileName || file.name,
+          lastLoadedAt: new Date().toLocaleString("de-DE"),
+        });
+      }
     }
 
     renderSavedFileInfo();
@@ -143,13 +182,20 @@ async function loadExcelFile(file: File, saveMeta: boolean): Promise<void> {
       return;
     }
 
+    renderVariables(loadedVariables);
     await refreshUsageStatus();
-    setStatus(`${result.length} Variable(n) geladen.`);
+
+    setStatus(`${result.length} Variable(n) aus Excel eingelesen.`);
   } catch (error) {
     console.error(error);
     setStatus("Fehler beim Lesen der Excel-Datei.");
   }
 }
+
+// ============================================================================
+// BLOCK D - AKTUALISIERUNG WORD-DOKUMENT
+// STABIL: Alle aktualisieren / einzelne Variable aktualisieren / Status.
+// ============================================================================
 
 async function handleUpdateAll(): Promise<void> {
   if (loadedVariables.length === 0) {
@@ -167,10 +213,14 @@ async function handleUpdateAll(): Promise<void> {
 
       for (const control of controls.items) {
         const meta = parseControlMeta(control.tag);
-        if (!meta) continue;
+        if (!meta) {
+          continue;
+        }
 
         const variable = loadedVariables.find((v) => v.name === meta.variableName);
-        if (!variable) continue;
+        if (!variable) {
+          continue;
+        }
 
         await renderVariableIntoControl(context, control, variable, meta, true);
         updatedCount++;
@@ -185,7 +235,7 @@ async function handleUpdateAll(): Promise<void> {
       await applyHighlightToAllVariables(true);
     }
 
-    setStatus(`${updatedCount} Feld(er) im Dokument aktualisiert.`);
+    setStatus(`${updatedCount} Variable(n) im Word-Dokument aktualisiert.`);
   } catch (error) {
     console.error(error);
     setStatus("Fehler beim Aktualisieren der Variablen im Word-Dokument.");
@@ -194,7 +244,9 @@ async function handleUpdateAll(): Promise<void> {
 
 async function updateSingleVariable(variableName: string): Promise<void> {
   const variable = loadedVariables.find((v) => v.name === variableName);
-  if (!variable) return;
+  if (!variable) {
+    return;
+  }
 
   try {
     let updatedCount = 0;
@@ -206,8 +258,12 @@ async function updateSingleVariable(variableName: string): Promise<void> {
 
       for (const control of controls.items) {
         const meta = parseControlMeta(control.tag);
-        if (!meta) continue;
-        if (meta.variableName !== variableName) continue;
+        if (!meta) {
+          continue;
+        }
+        if (meta.variableName !== variableName) {
+          continue;
+        }
 
         await renderVariableIntoControl(context, control, variable, meta, true);
         updatedCount++;
@@ -222,7 +278,7 @@ async function updateSingleVariable(variableName: string): Promise<void> {
       await applyHighlightToAllVariables(true);
     }
 
-    setStatus(`${updatedCount} Vorkommen von "${variableName}" aktualisiert.`);
+    setStatus(`${updatedCount} Vorkommen von "${variableName}" im Word-Dokument aktualisiert.`);
   } catch (error) {
     console.error(error);
     setStatus(`Fehler beim Aktualisieren von "${variableName}".`);
@@ -251,10 +307,14 @@ async function refreshUsageStatus(): Promise<void> {
 
       for (const control of controls.items) {
         const meta = parseControlMeta(control.tag);
-        if (!meta) continue;
+        if (!meta) {
+          continue;
+        }
 
         const variable = variableMap.get(meta.variableName);
-        if (!variable) continue;
+        if (!variable) {
+          continue;
+        }
 
         variable.usageCount += 1;
 
@@ -287,9 +347,15 @@ async function refreshUsageStatus(): Promise<void> {
     renderVariables(loadedVariables);
   } catch (error) {
     console.error(error);
-    setStatus("Fehler beim Prüfen des Dokumentstatus.");
+    renderVariables(loadedVariables);
+    setStatus("Variablen geladen, aber Dokumentstatus konnte nicht vollständig geprüft werden.");
   }
 }
+
+// ============================================================================
+// BLOCK E - HERVORHEBUNG
+// STABIL: Variablen im Dokument hervorheben / Hervorhebung entfernen.
+// ============================================================================
 
 async function toggleHighlight(): Promise<void> {
   try {
@@ -318,7 +384,9 @@ async function applyHighlightToAllVariables(enable: boolean): Promise<void> {
 
     for (const control of controls.items) {
       const meta = parseControlMeta(control.tag);
-      if (!meta) continue;
+      if (!meta) {
+        continue;
+      }
 
       const range = control.getRange();
       range.font.highlightColor = enable ? "#FFF59D" : null;
@@ -344,6 +412,15 @@ function renderHighlightButtonState(): void {
       : "Hervorhebung: aus";
   }
 }
+
+// ============================================================================
+// BLOCK F - UI RENDERING TASKPANE
+// STABIL:
+// - Seitenbreite anpassen: funktioniert
+// - Word-Rahmen erstellen: funktioniert
+// - Formatierung bei Aktualisierung beibehalten: funktioniert
+// Änderungen hier nur für neue Optionen oder UI-Anordnung.
+// ============================================================================
 
 function renderVariables(variables: VariableItem[]): void {
   const variablesList = document.getElementById("variablesList") as HTMLDivElement | null;
@@ -385,8 +462,8 @@ function renderVariables(variables: VariableItem[]): void {
         ? `
           <div style="margin-top:10px; display:grid; gap:8px;">
             <label style="font-size:12px; color:#444;">
-              <input type="checkbox" id="excelfmt-${index}" ${savedOptions.useExcelFormatting ? "checked" : ""} />
-              Excel-Format übernehmen
+              <input type="checkbox" id="excelfmt-${index}" disabled />
+              Excel-Format (später)
             </label>
             <label style="font-size:12px; color:#444;">
               <input type="checkbox" id="fit-${index}" ${savedOptions.fitWidth ? "checked" : ""} />
@@ -437,7 +514,9 @@ function renderVariables(variables: VariableItem[]): void {
       const target = event.currentTarget as HTMLButtonElement;
       const index = Number(target.getAttribute("data-index"));
       const variable = loadedVariables[index];
-      if (!variable) return;
+      if (!variable) {
+        return;
+      }
 
       const meta = getMetaFromUi(index, variable);
       await insertVariable(variable, meta);
@@ -450,7 +529,9 @@ function renderVariables(variables: VariableItem[]): void {
       const target = event.currentTarget as HTMLButtonElement;
       const index = Number(target.getAttribute("data-index"));
       const variable = loadedVariables[index];
-      if (!variable) return;
+      if (!variable) {
+        return;
+      }
 
       const meta = getMetaFromUi(index, variable);
       tableOptionsByVariable[variable.name] = {
@@ -465,6 +546,15 @@ function renderVariables(variables: VariableItem[]): void {
   });
 }
 
+// ============================================================================
+// BLOCK G - OPTIONSAUSWAHL PRO VARIABLE
+// STABIL:
+// - Seitenbreite anpassen
+// - Word-Rahmen erstellen
+// - Formatierung bei Aktualisierung beibehalten
+// Diese Logik aktuell nicht ohne Grund ändern.
+// ============================================================================
+
 function getMetaFromUi(index: number, variable: VariableItem): ParsedControlMeta {
   if (!variable.isBlock) {
     return {
@@ -477,7 +567,6 @@ function getMetaFromUi(index: number, variable: VariableItem): ParsedControlMeta
     };
   }
 
-  const excelFmtCheckbox = document.getElementById(`excelfmt-${index}`) as HTMLInputElement | null;
   const fitCheckbox = document.getElementById(`fit-${index}`) as HTMLInputElement | null;
   const bordersCheckbox = document.getElementById(`borders-${index}`) as HTMLInputElement | null;
   const keepFmtCheckbox = document.getElementById(`keepfmt-${index}`) as HTMLInputElement | null;
@@ -488,18 +577,27 @@ function getMetaFromUi(index: number, variable: VariableItem): ParsedControlMeta
     fitWidth: !!fitCheckbox?.checked,
     withWordBorders: !!bordersCheckbox?.checked,
     keepFormattingOnUpdate: !!keepFmtCheckbox?.checked,
-    useExcelFormatting: !!excelFmtCheckbox?.checked,
+    useExcelFormatting: false,
   };
 
   tableOptionsByVariable[variable.name] = {
     fitWidth: meta.fitWidth,
     withWordBorders: meta.withWordBorders,
     keepFormattingOnUpdate: meta.keepFormattingOnUpdate,
-    useExcelFormatting: meta.useExcelFormatting,
+    useExcelFormatting: false,
   };
 
   return meta;
 }
+
+// ============================================================================
+// BLOCK H - EINFÜGEN UND CURSORVERHALTEN
+// STABIL:
+// - Einzelwert einfügen
+// - Cursor hinter Feld setzen
+// - Leerzeichenlogik funktioniert
+// Änderungen nur bei echtem Bedarf.
+// ============================================================================
 
 async function insertVariable(variable: VariableItem, meta: ParsedControlMeta): Promise<void> {
   try {
@@ -534,14 +632,17 @@ async function insertVariable(variable: VariableItem, meta: ParsedControlMeta): 
       await applyHighlightToAllVariables(true);
     }
 
-    setStatus(`Variable "${variable.name}" wurde eingefügt.`);
+    setStatus(`Variable "${variable.name}" wurde in das Word-Dokument eingefügt.`);
   } catch (error) {
     console.error(error);
     setStatus(`Fehler beim Einfügen der Variable "${variable.name}".`);
   }
 }
 
-async function moveCursorOutsideSingleControl(context: Word.RequestContext, control: Word.ContentControl): Promise<void> {
+async function moveCursorOutsideSingleControl(
+  context: Word.RequestContext,
+  control: Word.ContentControl
+): Promise<void> {
   const afterRange = control.getRange("After");
   afterRange.load("text");
   await context.sync();
@@ -563,6 +664,16 @@ async function moveCursorOutsideSingleControl(context: Word.RequestContext, cont
   finalAfter.select();
 }
 
+// ============================================================================
+// BLOCK I - WORD-AUSGABE / TABELLENRENDERING
+// STABIL:
+// - Tabellen in Word einfügen
+// - Seitenbreite anpassen
+// - Word-Rahmen erstellen
+// - Formatierung bei Aktualisierung beibehalten
+// Diesen Block nur ändern, wenn sich Tabellenlogik ändern soll.
+// ============================================================================
+
 async function renderVariableIntoControl(
   context: Word.RequestContext,
   control: Word.ContentControl,
@@ -579,28 +690,35 @@ async function renderVariableIntoControl(
 
       if (tables.items.length > 0) {
         const table = tables.items[0];
-        const existingRowCount = table.rowCount;
-        const existingColCount = table.getCell(0, 0) ? variable.matrix[0]?.length ?? 0 : variable.matrix[0]?.length ?? 0;
 
-        if (existingRowCount === variable.matrix.length) {
-          for (let r = 0; r < variable.matrix.length; r++) {
-            const row = variable.matrix[r];
-            for (let c = 0; c < row.length; c++) {
+        for (let r = 0; r < variable.matrix.length; r++) {
+          for (let c = 0; c < variable.matrix[r].length; c++) {
+            try {
               const cell = table.getCell(r, c);
-              cell.body.insertText(row[c], Word.InsertLocation.replace);
+              cell.body.insertText(variable.matrix[r][c], Word.InsertLocation.replace);
+            } catch {
+              control.clear();
+              const htmlFallback = buildHtmlTable(
+                variable.matrix,
+                variable.colWidthsPx,
+                meta.fitWidth,
+                meta.withWordBorders
+              );
+              control.insertHtml(htmlFallback, Word.InsertLocation.replace);
+              return;
             }
           }
-          return;
         }
+        return;
       }
     }
 
     control.clear();
     const html = buildHtmlTable(
       variable.matrix,
+      variable.colWidthsPx,
       meta.fitWidth,
-      meta.withWordBorders,
-      meta.useExcelFormatting
+      meta.withWordBorders
     );
     control.insertHtml(html, Word.InsertLocation.replace);
     return;
@@ -609,35 +727,104 @@ async function renderVariableIntoControl(
   control.insertText(variable.displayValue, Word.InsertLocation.replace);
 }
 
+// ============================================================================
+// BLOCK J - HTML-TABELLE UND SPALTENBREITEN
+// AKTIV IN ARBEIT:
+// - Excel-Spaltenbreiten priorisieren
+// - Tabellenbreite innerhalb Word sinnvoll steuern
+// Dies ist künftig der Hauptblock für Tabellenlayout.
+// ============================================================================
+
 function buildHtmlTable(
   matrix: string[][],
+  rawColWidthsPx: number[],
   fitWidth: boolean,
-  withWordBorders: boolean,
-  useExcelFormatting: boolean
+  withWordBorders: boolean
 ): string {
-  const tableWidth = fitWidth ? "width:100%;" : "width:auto;";
+  const colCount = matrix[0]?.length ?? 0;
+  const effectiveWidths = buildEffectiveColumnWidths(matrix, rawColWidthsPx, colCount, fitWidth);
+
+  const colGroup = effectiveWidths.length
+    ? `<colgroup>${effectiveWidths
+        .map((w) => {
+          if (fitWidth) {
+            return `<col style="width:${w}%;">`;
+          }
+          return `<col style="width:${w}px;">`;
+        })
+        .join("")}</colgroup>`
+    : "";
+
   const borderStyle = withWordBorders ? "1px solid #666" : "none";
-  const cellPadding = "6px 8px";
-  const extraStyle = useExcelFormatting ? "font-family:Calibri, Arial, sans-serif; font-size:11pt;" : "";
 
   const rowsHtml = matrix
-    .map(
-      (row) =>
-        "<tr>" +
-        row
-          .map(
-            (cell) =>
-              `<td style="border:${borderStyle}; padding:${cellPadding}; vertical-align:top; ${extraStyle}">${escapeHtml(
-                cell
-              )}</td>`
-          )
-          .join("") +
-        "</tr>"
-    )
+    .map((row) => {
+      const cellsHtml = row
+        .map((cell) => {
+          return `<td style="border:${borderStyle};padding:6px 8px;vertical-align:top;white-space:pre-wrap;overflow-wrap:anywhere;">${escapeHtml(
+            cell
+          )}</td>`;
+        })
+        .join("");
+      return `<tr>${cellsHtml}</tr>`;
+    })
     .join("");
 
-  return `<table style="border-collapse:collapse;${tableWidth}${extraStyle}">${rowsHtml}</table>`;
+  const tableStyle = fitWidth
+    ? "border-collapse:collapse;width:100%;table-layout:fixed;"
+    : `border-collapse:collapse;width:${Math.round(
+        effectiveWidths.reduce((sum, w) => sum + w, 0)
+      )}px;max-width:100%;table-layout:fixed;`;
+
+  return `<table style="${tableStyle}">${colGroup}${rowsHtml}</table>`;
 }
+
+function buildEffectiveColumnWidths(
+  matrix: string[][],
+  rawColWidthsPx: number[],
+  colCount: number,
+  fitWidth: boolean
+): number[] {
+  if (!colCount) {
+    return [];
+  }
+
+  const hasExcelWidths =
+    rawColWidthsPx.length === colCount &&
+    rawColWidthsPx.some((w) => typeof w === "number" && w > 0);
+
+  let widthsPx: number[];
+
+  if (hasExcelWidths) {
+    widthsPx = rawColWidthsPx.map((w) => clampWidthPx(w));
+  } else {
+    widthsPx = new Array(colCount).fill(0).map((_, c) => {
+      let maxLen = 6;
+      for (let r = 0; r < matrix.length; r++) {
+        const value = matrix[r]?.[c] ?? "";
+        maxLen = Math.max(maxLen, String(value).length);
+      }
+      return clampWidthPx(maxLen * 7 + 24);
+    });
+  }
+
+  if (fitWidth) {
+    const total = widthsPx.reduce((sum, w) => sum + w, 0) || 1;
+    return widthsPx.map((w) => Number(((w / total) * 100).toFixed(4)));
+  }
+
+  return widthsPx;
+}
+
+function clampWidthPx(value: number): number {
+  return Math.max(50, Math.min(420, Math.round(value || 120)));
+}
+
+// ============================================================================
+// BLOCK K - TAGS / METADATEN DER VARIABLEN
+// STABIL: Tag-Struktur für gespeicherte Optionen.
+// Nicht leichtfertig ändern.
+// ============================================================================
 
 function parseControlMeta(tag: string | undefined): ParsedControlMeta | null {
   if (!tag) return null;
@@ -676,6 +863,11 @@ function decodeSafe(value: string): string {
   }
 }
 
+// ============================================================================
+// BLOCK L - TEXTVERGLEICH / STATUSPRÜFUNG
+// STABIL: Vergleich für Einzelwerte und Tabellenstatus.
+// ============================================================================
+
 function textsEqualForInlineStatus(currentText: string, expectedText: string): boolean {
   return normalizeInlineText(currentText) === normalizeInlineText(expectedText);
 }
@@ -700,10 +892,20 @@ function normalizeBlockText(value: string): string {
     .join("\n");
 }
 
+// ============================================================================
+// BLOCK M - EXCEL-BEREICHE AUFLÖSEN
+// STABIL: Benannte Bereiche, Zellwerte, Spaltenbreiten.
+// ============================================================================
+
 function resolveNamedReferenceData(
   workbook: XLSX.WorkBook,
   ref: string
-): { displayValue: string; matrix: string[][]; isBlock: boolean } {
+): {
+  displayValue: string;
+  matrix: string[][];
+  isBlock: boolean;
+  colWidthsPx: number[];
+} {
   const cleanedRef = ref.replace(/^=/, "");
   const match = cleanedRef.match(/^(?:'([^']+)'|([^!]+))!(.+)$/);
 
@@ -712,18 +914,22 @@ function resolveNamedReferenceData(
       displayValue: ref,
       matrix: [[ref]],
       isBlock: false,
+      colWidthsPx: [],
     };
   }
 
   const sheetName = (match[1] || match[2] || "").trim();
   const rangeAddress = match[3];
-  const worksheet = workbook.Sheets[sheetName];
+  const worksheet = workbook.Sheets[sheetName] as XLSX.WorkSheet & {
+    ["!cols"]?: Array<{ wpx?: number; wch?: number; width?: number }>;
+  };
 
   if (!worksheet) {
     return {
       displayValue: ref,
       matrix: [[ref]],
       isBlock: false,
+      colWidthsPx: [],
     };
   }
 
@@ -741,20 +947,44 @@ function resolveNamedReferenceData(
       matrix.push(row);
     }
 
+    const colWidthsPx: number[] = [];
+    const colsMeta = worksheet["!cols"] || [];
+    for (let c = range.s.c; c <= range.e.c; c++) {
+      const colMeta = colsMeta[c];
+      colWidthsPx.push(getColumnWidthPx(colMeta));
+    }
+
     const isBlock = matrix.length > 1 || (matrix[0] && matrix[0].length > 1);
     const displayValue = isBlock
       ? matrix.map((row) => row.join(" | ")).join("\n")
       : (matrix[0]?.[0] ?? "");
 
-    return { displayValue, matrix, isBlock };
+    return { displayValue, matrix, isBlock, colWidthsPx };
   } catch {
     return {
       displayValue: ref,
       matrix: [[ref]],
       isBlock: false,
+      colWidthsPx: [],
     };
   }
 }
+
+function getColumnWidthPx(colMeta: { wpx?: number; wch?: number; width?: number } | undefined): number {
+  if (!colMeta) return 120;
+  if (typeof colMeta.wpx === "number") return colMeta.wpx;
+  if (typeof colMeta.wch === "number") return Math.max(50, Math.round(colMeta.wch * 7 + 12));
+  if (typeof colMeta.width === "number") return Math.max(50, Math.round(colMeta.width * 7));
+  return 120;
+}
+
+// ============================================================================
+// BLOCK N - DATENFORMATIERUNG AUS EXCEL
+// STABIL:
+// - Datum kurz/lang
+// - Prozentdarstellung
+// - Zellwertanzeige
+// ============================================================================
 
 function getCellDisplayValue(cell: XLSX.CellObject | undefined): string {
   if (!cell) return "";
@@ -864,6 +1094,11 @@ function tryNormalizePercentToGerman(value: string): string | null {
   return `${num.toLocaleString("de-DE")} %`;
 }
 
+// ============================================================================
+// BLOCK O - DOKUMENTEINSTELLUNGEN UND HILFSFUNKTIONEN
+// STABIL: Gemerkte Excel-Datei, Statusanzeige, HTML-Escaping.
+// ============================================================================
+
 async function saveLinkedFileMeta(meta: SavedFileMeta): Promise<void> {
   Office.context.document.settings.set("excelWordLinkedFileMeta", meta);
 
@@ -878,25 +1113,36 @@ async function saveLinkedFileMeta(meta: SavedFileMeta): Promise<void> {
   });
 }
 
+function getSavedFileMeta(): SavedFileMeta | undefined {
+  return Office.context.document.settings.get("excelWordLinkedFileMeta") as SavedFileMeta | undefined;
+}
+
 function renderSavedFileInfo(): void {
   const linkedFileInfo = document.getElementById("linkedFileInfo");
   if (!linkedFileInfo) return;
 
-  const meta = Office.context.document.settings.get("excelWordLinkedFileMeta") as SavedFileMeta | undefined;
+  const meta = getSavedFileMeta();
 
   if (!meta) {
-    linkedFileInfo.innerHTML = "Noch keine Excel-Datei diesem Word-Dokument zugeordnet.";
+    linkedFileInfo.innerHTML = "Noch keine Excel-Datei ausgewählt.";
     return;
   }
 
+  const currentFileInfo = currentExcelFile
+    ? `<br/><strong>Aktuell ausgewählt:</strong> ${escapeHtml(currentExcelFile.name)}`
+    : "";
+
   linkedFileInfo.innerHTML =
     `<strong>Zugeordnete Excel-Datei:</strong> ${escapeHtml(meta.fileName)}<br/>` +
-    `<strong>Letzter Import:</strong> ${escapeHtml(meta.lastLoadedAt)}`;
+    `<strong>Zuletzt geladen:</strong> ${escapeHtml(meta.lastLoadedAt)}` +
+    currentFileInfo;
 }
 
 function setStatus(message: string): void {
   const status = document.getElementById("statusMessage");
-  if (status) status.textContent = message;
+  if (status) {
+    status.textContent = message;
+  }
 }
 
 function escapeHtml(value: string): string {

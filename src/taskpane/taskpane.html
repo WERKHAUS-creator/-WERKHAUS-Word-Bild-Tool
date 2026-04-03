@@ -20,17 +20,21 @@
   <main id="app-body">
     <h1 class="ms-font-xl">Excel-Variablen</h1>
 
+    <div style="margin-bottom: 8px; color:#444; font-size:13px;">
+      Excel-Datei auswählen und danach Inhalte im Word-Dokument aktualisieren.
+    </div>
+
     <div style="margin-bottom: 16px;">
       <input type="file" id="excelFile" accept=".xlsx,.xls" />
     </div>
 
     <div style="display:flex; gap:8px; margin-bottom:20px; flex-wrap:wrap;">
       <button id="loadExcelButton" class="ms-Button ms-Button--primary">
-        <span class="ms-Button-label">Excel-Datei laden</span>
+        <span class="ms-Button-label">Excel-Datei auswählen</span>
       </button>
 
       <button id="updateAllButton" class="ms-Button">
-        <span class="ms-Button-label">Alle aktualisieren</span>
+        <span class="ms-Button-label">Inhalte aktualisieren</span>
       </button>
 
       <button id="toggleHighlightButton" class="ms-Button">
@@ -39,7 +43,7 @@
     </div>
 
     <div style="margin-bottom: 16px;">
-      <label for="dateFormatSelect" style="font-size:13px; color:#444;">Datumsformat:</label>
+      <label for="dateFormatSelect" style="font-size:13px; color:#444;">Datumsanzeige:</label>
       <select id="dateFormatSelect" style="width:100%; margin-top:4px;">
         <option value="short" selected>Kurz (03.04.2026)</option>
         <option value="long">Lang (03. April 2026)</option>
