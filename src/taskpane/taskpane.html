@@ -1,0 +1,51 @@
+<!-- Copyright (c) Microsoft Corporation. All rights reserved. Licensed under the MIT License. -->
+<!DOCTYPE html>
+<html>
+
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="X-UA-Compatible" content="IE=Edge" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Excel Word Variablen</title>
+
+  <script type="text/javascript" src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
+
+  <link rel="stylesheet"
+    href="https://res-1.cdn.office.net/files/fabric-cdn-prod_20230815.002/office-ui-fabric-core/11.1.0/css/fabric.min.css" />
+
+  <link href="taskpane.css" rel="stylesheet" type="text/css" />
+</head>
+
+<body class="ms-font-m ms-Fabric" style="padding: 16px;">
+  <main id="app-body">
+    <h1 class="ms-font-xl">Excel-Variablen</h1>
+    <p class="ms-font-m">Excel-Datei auswählen, Variablen laden und im Word-Dokument verwalten.</p>
+
+    <div style="margin-bottom: 16px;">
+      <input type="file" id="excelFile" accept=".xlsx,.xls" />
+    </div>
+
+    <div style="display:flex; gap:8px; margin-bottom:20px; flex-wrap:wrap;">
+      <button id="loadExcelButton" class="ms-Button ms-Button--primary">
+        <span class="ms-Button-label">Excel-Datei laden</span>
+      </button>
+
+      <button id="updateAllButton" class="ms-Button">
+        <span class="ms-Button-label">Alle aktualisieren</span>
+      </button>
+
+      <button id="toggleHighlightButton" class="ms-Button">
+        <span class="ms-Button-label">Variablen hervorheben</span>
+      </button>
+    </div>
+
+    <div id="linkedFileInfo" style="margin-bottom:12px; font-size:13px; color:#444;"></div>
+    <div id="highlightStateInfo" style="margin-bottom:12px; font-size:13px; color:#444;">Hervorhebung: aus</div>
+    <div id="statusMessage" style="margin-bottom:16px; color:#444;"></div>
+
+    <h2 class="ms-font-l">Variablen</h2>
+    <div id="variablesList">Noch keine Variablen geladen.</div>
+  </main>
+</body>
+
+</html>
