@@ -527,7 +527,7 @@ function initTaskpane() {
 
       const captionInput = document.createElement("textarea");
       captionInput.className = "caption-input";
-      captionInput.rows = 4;
+      captionInput.rows = 6;
       captionInput.placeholder = "Kurze Bildbeschriftung eingeben";
       captionInput.value = item.caption || "";
       captionInput.draggable = false;

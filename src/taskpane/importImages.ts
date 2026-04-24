@@ -6,6 +6,7 @@ import type { ImageItem, StoredMeta } from "./types";
 
 export interface ImageImportPersistence {
   getMeta(hash: string): StoredMeta;
+  getMetaKeys?: () => string[];
   setMeta(hash: string, meta: StoredMeta): void;
 }
 
@@ -59,12 +60,13 @@ export async function importImageFiles(
   existingItems: ImageItem[],
   persistence: ImageImportPersistence
 ): Promise<ImportImageFilesResult> {
-  // Stabiler Kernbereich: derselbe Importpfad fuer Auswahl, Ordner und Drop.
   const allFiles = Array.from(files);
   const invalidFiles = allFiles.filter((file) => !isSupportedImageFile(file));
   const imageFiles = allFiles.filter((file) => !invalidFiles.includes(file));
   const nextItems = [...existingItems];
-  const knownHashes = new Set(nextItems.map((item) => item.hash));
+  const knownKeys = new Set(nextItems.map((item) => item.key || item.hash));
+  const metaKeys = persistence.getMetaKeys ? persistence.getMetaKeys() : [];
+  const hasLegacyHashEntries = metaKeys.some(isLegacySha256Key);
   const invalidFileCount = allFiles.length - imageFiles.length;
   const invalidFileNames = invalidFiles.map((file) => file.name);
 
@@ -88,33 +90,33 @@ export async function importImageFiles(
 
   for (const file of imageFiles) {
     try {
-      let hashHex = "";
-      let buffer: ArrayBuffer | null = null;
+      const key = makeFileKey(file);
+      const hashHex = key;
 
-      try {
-        buffer = await file.arrayBuffer();
-        const hashBuffer = await crypto.subtle.digest("SHA-256", buffer);
-        const hashArray = Array.from(new Uint8Array(hashBuffer));
-        hashHex = hashArray.map((b) => b.toString(16).padStart(2, "0")).join("");
-      } catch (err) {
-        console.warn("Fehler beim Berechnen des Datei-Hashes:", err);
-        hashHex = makeFileKey(file);
-      }
-
-      if (knownHashes.has(hashHex)) {
+      if (knownKeys.has(key)) {
         skippedCount += 1;
         continue;
       }
 
       const dataUrl = await readFileAsDataUrl(file);
-      const key = makeFileKey(file);
+      const dimensions = await getImageDimensions(dataUrl);
       const stored = persistence.getMeta(hashHex);
-      const exifParsed = buffer ? parseExif(buffer) : {};
-      const imageDimensions = await getImageDimensions(dataUrl);
+      const migratedLegacyCaption =
+        hasLegacyHashEntries && !hasCaption(stored)
+          ? await getLegacyCaptionMeta(file, persistence)
+          : undefined;
+      const effectiveStored = migratedLegacyCaption
+        ? { ...stored, ...migratedLegacyCaption }
+        : stored;
+
+      if (migratedLegacyCaption) {
+        // Feldweise Migration: nur fehlende Caption uebernehmen, keine weiteren Metadaten ueberschreiben.
+        persistence.setMeta(hashHex, effectiveStored);
+      }
 
       const pos =
-        stored.position && typeof stored.position === "number"
-          ? stored.position
+        effectiveStored.position && typeof effectiveStored.position === "number"
+          ? effectiveStored.position
           : nextItems.length + 1;
 
       nextItems.push({
@@ -125,26 +127,26 @@ export async function importImageFiles(
         base64: dataUrlToBase64(dataUrl),
         previewUrl: dataUrl,
         hash: hashHex,
-        caption: stored.caption || "",
+        caption: effectiveStored.caption || "",
         position: pos,
-        selected: stored.selected ?? true,
-        includeCaptionInWord: stored.includeCaptionInWord ?? true,
-        exif: {
-          dateTimeOriginal: exifParsed.dateTimeOriginal,
-          model: exifParsed.model,
-          width: imageDimensions?.width,
-          height: imageDimensions?.height,
-        },
+        selected: effectiveStored.selected ?? true,
+        includeCaptionInWord: effectiveStored.includeCaptionInWord ?? true,
+        exif: dimensions
+          ? {
+              width: dimensions.width,
+              height: dimensions.height,
+            }
+          : undefined,
       });
-      knownHashes.add(hashHex);
+      knownKeys.add(key);
 
       if (!stored.importedAt) {
         persistence.setMeta(hashHex, {
-          ...(stored || {}),
+          ...(effectiveStored || {}),
           importedAt: new Date().toISOString(),
           position: pos,
-          selected: stored.selected ?? true,
-          includeCaptionInWord: stored.includeCaptionInWord ?? true,
+          selected: effectiveStored.selected ?? true,
+          includeCaptionInWord: effectiveStored.includeCaptionInWord ?? true,
         });
       }
 
@@ -202,6 +204,50 @@ function dataUrlToBase64(dataUrl: string): string {
   return dataUrl.substring(commaIndex + 1);
 }
 
+function hasCaption(meta: StoredMeta | undefined): boolean {
+  return Boolean(meta && typeof meta.caption === "string" && meta.caption.trim().length > 0);
+}
+
+async function getLegacyCaptionMeta(
+  file: File,
+  persistence: ImageImportPersistence
+): Promise<Pick<StoredMeta, "caption" | "comment"> | undefined> {
+  try {
+    const legacyHash = await computeLegacySha256(file);
+    if (!legacyHash) {
+      return undefined;
+    }
+
+    const legacyStored = persistence.getMeta(legacyHash);
+    if (!hasCaption(legacyStored)) {
+      return undefined;
+    }
+
+    return {
+      caption: legacyStored.caption,
+      comment: legacyStored.comment,
+    };
+  } catch (error) {
+    console.warn("Konnte alte Bild-Captions nicht migrieren:", error);
+    return undefined;
+  }
+}
+
+function isLegacySha256Key(key: string): boolean {
+  return /^[a-f0-9]{64}$/i.test(key);
+}
+
+async function computeLegacySha256(file: File): Promise<string | undefined> {
+  if (typeof crypto === "undefined" || !crypto.subtle) {
+    return undefined;
+  }
+
+  const buffer = await file.arrayBuffer();
+  const hashBuffer = await crypto.subtle.digest("SHA-256", buffer);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  return hashArray.map((value) => value.toString(16).padStart(2, "0")).join("");
+}
+
 async function getImageDimensions(
   dataUrl: string
 ): Promise<{ width: number; height: number } | undefined> {
@@ -226,96 +272,4 @@ async function getImageDimensions(
     image.onerror = () => resolve(undefined);
     image.src = dataUrl;
   });
-}
-
-function parseExif(arrayBuffer: ArrayBuffer): { dateTimeOriginal?: string; model?: string } {
-  try {
-    const view = new DataView(arrayBuffer);
-    if (view.getUint16(0) !== 0xffd8) return {};
-
-    let offset = 2;
-
-    while (offset < view.byteLength) {
-      if (view.getUint8(offset) !== 0xff) break;
-
-      const marker = view.getUint8(offset + 1);
-      const size = view.getUint16(offset + 2);
-
-      if (marker === 0xe1) {
-        const exifHeader = offset + 4;
-        const exifStr = String.fromCharCode(
-          view.getUint8(exifHeader),
-          view.getUint8(exifHeader + 1),
-          view.getUint8(exifHeader + 2),
-          view.getUint8(exifHeader + 3),
-          view.getUint8(exifHeader + 4),
-          view.getUint8(exifHeader + 5)
-        );
-
-        if (exifStr !== "Exif\0\0") return {};
-
-        const tiffOffset = exifHeader + 6;
-        const endianMark = view.getUint16(tiffOffset);
-        const little = endianMark === 0x4949;
-
-        const getUint16 = (off: number) => view.getUint16(off, little);
-        const getUint32 = (off: number) => view.getUint32(off, little);
-
-        const firstIFDOffset = getUint32(tiffOffset + 4) + tiffOffset;
-        const entries = getUint16(firstIFDOffset);
-
-        let dateTime: string | undefined;
-        let model: string | undefined;
-
-        for (let i = 0; i < entries; i++) {
-          const entryOffset = firstIFDOffset + 2 + i * 12;
-          const tag = getUint16(entryOffset);
-          const count = getUint32(entryOffset + 4);
-          const valueOffset = getUint32(entryOffset + 8);
-
-          if (tag === 0x0110) {
-            const strOffset = count > 4 ? tiffOffset + valueOffset : entryOffset + 8;
-            let s = "";
-            for (let k = 0; k < count - 1; k++) {
-              const c = view.getUint8(strOffset + k);
-              if (c === 0) break;
-              s += String.fromCharCode(c);
-            }
-            model = s;
-          }
-
-          if (tag === 0x8769) {
-            const exifIFDOffset = tiffOffset + valueOffset;
-            const exifEntries = getUint16(exifIFDOffset);
-
-            for (let j = 0; j < exifEntries; j++) {
-              const eOff = exifIFDOffset + 2 + j * 12;
-              const etag = getUint16(eOff);
-              const ecount = getUint32(eOff + 4);
-              const evalOff = getUint32(eOff + 8);
-
-              if (etag === 0x9003) {
-                const strOff = ecount > 4 ? tiffOffset + evalOff : eOff + 8;
-                let ds = "";
-                for (let k = 0; k < ecount - 1; k++) {
-                  const c = view.getUint8(strOff + k);
-                  if (c === 0) break;
-                  ds += String.fromCharCode(c);
-                }
-                dateTime = ds;
-              }
-            }
-          }
-        }
-
-        return { dateTimeOriginal: dateTime, model };
-      }
-
-      offset += 2 + size;
-    }
-  } catch (e) {
-    console.warn("EXIF parse error", e);
-  }
-
-  return {};
 }

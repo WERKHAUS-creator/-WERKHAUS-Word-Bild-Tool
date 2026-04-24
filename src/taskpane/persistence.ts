@@ -9,6 +9,7 @@ const META_KEY = "werkhaus-image-metadata";
 export interface TaskpanePersistence {
   loadAllMeta(): Record<string, StoredMeta>;
   getMeta(hash: string): StoredMeta;
+  getMetaKeys(): string[];
   setMeta(hash: string, meta: StoredMeta): void;
 }
 
@@ -45,6 +46,10 @@ export function createTaskpanePersistence(): TaskpanePersistence {
     return imageMetadataStore[hash] || {};
   }
 
+  function getMetaKeys(): string[] {
+    return Object.keys(imageMetadataStore);
+  }
+
   function scheduleSaveMeta() {
     if (metaSaveTimeout) {
       clearTimeout(metaSaveTimeout);
@@ -68,6 +73,7 @@ export function createTaskpanePersistence(): TaskpanePersistence {
   return {
     loadAllMeta,
     getMeta,
+    getMetaKeys,
     setMeta,
   };
 }
