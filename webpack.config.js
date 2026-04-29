@@ -1,4 +1,6 @@
-const devCerts = require("office-addin-dev-certs");
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
 const CopyWebpackPlugin = require("copy-webpack-plugin");
 const HtmlWebpackPlugin = require("html-webpack-plugin");
 
@@ -6,6 +8,20 @@ const urlDev = "https://localhost:3001/";
 const urlProd = "https://your-production-url.example.com/"; // spaeter auf echte URL setzen
 
 async function getHttpsOptions() {
+  const certDirectory = path.join(os.homedir(), ".office-addin-dev-certs");
+  const caPath = path.join(certDirectory, "ca.crt");
+  const keyPath = path.join(certDirectory, "localhost.key");
+  const certPath = path.join(certDirectory, "localhost.crt");
+
+  if (fs.existsSync(caPath) && fs.existsSync(keyPath) && fs.existsSync(certPath)) {
+    return {
+      ca: fs.readFileSync(caPath),
+      key: fs.readFileSync(keyPath),
+      cert: fs.readFileSync(certPath),
+    };
+  }
+
+  const devCerts = require("office-addin-dev-certs");
   const httpsOptions = await devCerts.getHttpsServerOptions();
   return {
     ca: httpsOptions.ca,
