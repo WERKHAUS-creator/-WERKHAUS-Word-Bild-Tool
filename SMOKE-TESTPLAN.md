@@ -1,4 +1,4 @@
-# WERKHAUS Word-Bild-Tool - Smoke-Testplan
+# Werkhaus Word & Bild - Smoke-Testplan
 
 ## Ziel
 
