@@ -4,8 +4,12 @@ import { createTaskpanePersistence } from "./persistence";
 import {
   type BilddatenProjectFile,
   type BilddatenProjectImage,
+  type ProjectParseResult,
+  type ProjectSaveSnapshot,
+  LEGACY_PROJECT_FILE_NAMES,
   PROJECT_FILE_NAME,
   buildBilddatenProjectFile,
+  getSuggestedProjectFileName,
   matchProjectImagesToItems,
   parseBilddatenProjectFile,
   serializeBilddatenProjectFile,
@@ -32,10 +36,16 @@ type ProjectFolderHandle = {
 let imageItems: ImageItem[] = [];
 let currentFolderHandle: ProjectFolderHandle | null = null;
 let currentProjectCreatedAt = new Date().toISOString();
+let currentProjectFile: BilddatenProjectFile | undefined;
+let projectAutoSaveTimer: number | undefined;
+let projectAutoSaveInFlight = false;
+let projectAutoSaveDirty = false;
+let projectLoadHydrationDepth = 0;
 const DEFAULT_PREVIEW_SIZE_PX = 120;
 const MIN_PREVIEW_SIZE_PX = 120;
 const MAX_PREVIEW_SIZE_PX = 500;
 const MAX_INSERT_SIZE_CM = 16;
+const PROJECT_AUTO_SAVE_DELAY_MS = 800;
 const naturalSortCollator = new Intl.Collator("de", { numeric: true, sensitivity: "base" });
 
 function initTaskpane() {
@@ -101,6 +111,7 @@ function initTaskpane() {
       previewSizePx = nextSize;
       previewSizeRange.value = String(nextSize);
       updatePreviewSize();
+      noteProjectStateChange("Vorschaugröße geändert.");
     });
   }
 
@@ -111,6 +122,7 @@ function initTaskpane() {
     insertSizeRange.addEventListener("input", () => {
       insertSizeCm = Math.min(MAX_INSERT_SIZE_CM, Number(insertSizeRange.value));
       insertSizeValue.textContent = `${insertSizeCm.toFixed(1)} cm`;
+      noteProjectStateChange("Einfügegröße geändert.");
     });
   }
 
@@ -126,6 +138,29 @@ function initTaskpane() {
     if (statusElement) {
       statusElement.textContent = message;
     }
+  }
+
+  function withProjectWorkflowNote(message: string): string {
+    const notes: string[] = [];
+
+    if (projectAutoSaveInFlight) {
+      notes.push("Wird gespeichert.");
+    } else if (currentFolderHandle) {
+      if (projectAutoSaveDirty) {
+        notes.push("Projekt geändert.");
+      }
+
+      notes.push("Auto-Save aktiv.");
+    } else if (currentProjectFile) {
+      notes.push("Direkter Schreibzugriff nicht verfügbar.");
+      notes.push("Export erforderlich.");
+    }
+
+    if (notes.length === 0) {
+      return message;
+    }
+
+    return `${message} ${notes.join(" ")}`;
   }
 
   function setDropZoneActive(active: boolean) {
@@ -397,6 +432,41 @@ function initTaskpane() {
     updateSortUI();
   }
 
+  function applyProjectUiState(projectFile: BilddatenProjectFile): void {
+    const ui = projectFile.ui || {};
+    const nextSortMode = (ui.sort_mode || projectFile.sortMode || "custom") as SortMode;
+
+    setCurrentSortMode(nextSortMode);
+
+    if (typeof ui.preview_size_px === "number" && previewSizeRange) {
+      const nextPreviewSize = Math.max(
+        MIN_PREVIEW_SIZE_PX,
+        Math.min(MAX_PREVIEW_SIZE_PX, ui.preview_size_px)
+      );
+      previewSizePx = nextPreviewSize;
+      previewSizeRange.value = String(nextPreviewSize);
+      updatePreviewSize();
+    }
+
+    if (typeof ui.insert_size_cm === "number" && insertSizeRange && insertSizeValue) {
+      const nextInsertSize = Math.max(0, Math.min(MAX_INSERT_SIZE_CM, ui.insert_size_cm));
+      insertSizeCm = nextInsertSize;
+      insertSizeRange.value = String(nextInsertSize);
+      insertSizeValue.textContent = `${nextInsertSize.toFixed(1)} cm`;
+    }
+
+    if (typeof ui.show_info === "boolean") {
+      showInfo = ui.show_info;
+    }
+
+    if (typeof ui.show_captions === "boolean") {
+      showCaptions = ui.show_captions;
+    }
+
+    updateVisibilityUI();
+    refreshCurrentProjectFile();
+  }
+
   function applySortModeToItems(options: { render?: boolean } = {}) {
     sortItemsForCurrentMode();
     persistImagePositions();
@@ -409,25 +479,47 @@ function initTaskpane() {
   }
 
   function applyProjectImageToItem(item: ImageItem, projectImage: BilddatenProjectImage): void {
-    item.relativePath = projectImage.relativePath || item.relativePath;
-    item.lastModified = projectImage.lastModified ?? item.lastModified;
-    item.caption = projectImage.caption || "";
-    item.selected = projectImage.active;
-    item.includeCaptionInWord = projectImage.includeCaptionInWord;
-    item.position = projectImage.position;
+    const relativePath =
+      typeof projectImage.relative_path === "string" && projectImage.relative_path
+        ? projectImage.relative_path
+        : typeof projectImage.relativePath === "string" && projectImage.relativePath
+          ? projectImage.relativePath
+          : item.relativePath;
+    const fullPath =
+      typeof projectImage.full_path === "string" && projectImage.full_path
+        ? projectImage.full_path
+        : item.fullPath;
+    const exifDateTaken =
+      typeof projectImage.exifDateTaken === "string" && projectImage.exifDateTaken
+        ? projectImage.exifDateTaken
+        : undefined;
 
-    if (projectImage.exifDateTaken) {
+    item.relativePath = relativePath;
+    item.fullPath = fullPath;
+    item.lastModified = projectImage.lastModified ?? item.lastModified;
+    item.caption = projectImage.caption ?? "";
+    item.selected = projectImage.selected ?? projectImage.active ?? item.selected;
+    item.visible = projectImage.visible ?? item.selected;
+    item.location = projectImage.location || item.location;
+    item.imageNumber = projectImage.image_number || item.imageNumber;
+    item.includeCaptionInWord =
+      projectImage.includeCaptionInWord ??
+      projectImage.include_caption_in_word ??
+      item.includeCaptionInWord;
+    item.position = projectImage.position || item.position;
+
+    if (exifDateTaken) {
       item.exif = {
         ...(item.exif || {}),
-        dateTimeOriginal: projectImage.exifDateTaken,
+        dateTimeOriginal: exifDateTaken,
       };
     }
 
     setMeta(item.hash, {
       caption: item.caption,
       position: projectImage.position,
-      selected: projectImage.active,
-      includeCaptionInWord: projectImage.includeCaptionInWord,
+      selected: item.selected,
+      includeCaptionInWord: item.includeCaptionInWord,
     });
   }
 
@@ -437,8 +529,9 @@ function initTaskpane() {
     unmatchedProjectCount: number;
     unmatchedItemCount: number;
   } {
+    currentProjectFile = projectFile;
     currentProjectCreatedAt = projectFile.createdAt || currentProjectCreatedAt;
-    setCurrentSortMode(projectFile.sortMode || "custom");
+    applyProjectUiState(projectFile);
 
     if (imageItems.length === 0) {
       return {
@@ -484,6 +577,7 @@ function initTaskpane() {
     imageItems = reorderedItems;
     persistImagePositions();
     renderImageList();
+    refreshCurrentProjectFile();
 
     return {
       applied: true,
@@ -503,6 +597,10 @@ function initTaskpane() {
     }
   ): string {
     if (!result.applied) {
+      if (result.unmatchedItemCount === 0 && result.unmatchedProjectCount > 0) {
+        return `${prefix}: Projekt geladen, aber im Tool sind noch keine Bilder vorhanden.`;
+      }
+
       if (result.unmatchedProjectCount > 0) {
         return `${prefix}: Keine passenden Bilder gefunden.`;
       }
@@ -521,6 +619,116 @@ function initTaskpane() {
     }
 
     return parts.join(" ");
+  }
+
+  function buildProjectSaveSnapshot(): ProjectSaveSnapshot {
+    return {
+      sortMode,
+      previewSizePx,
+      insertSizeCm,
+      showInfo,
+      showCaptions,
+      collapsedSections: getCollapsedSectionsSnapshot(),
+    };
+  }
+
+  async function runWithProjectLoadSuspended<T>(callback: () => Promise<T>): Promise<T> {
+    projectLoadHydrationDepth += 1;
+    try {
+      return await callback();
+    } finally {
+      projectLoadHydrationDepth = Math.max(0, projectLoadHydrationDepth - 1);
+    }
+  }
+
+  function refreshCurrentProjectFile(): void {
+    if (imageItems.length === 0 && !currentProjectFile) {
+      return;
+    }
+
+    currentProjectFile = buildBilddatenProjectFile(
+      imageItems,
+      sortMode,
+      currentProjectCreatedAt,
+      currentProjectFile,
+      buildProjectSaveSnapshot()
+    );
+    currentProjectCreatedAt = currentProjectFile.createdAt || currentProjectCreatedAt;
+  }
+
+  function clearProjectAutoSaveTimer(): void {
+    if (typeof projectAutoSaveTimer === "number") {
+      window.clearTimeout(projectAutoSaveTimer);
+      projectAutoSaveTimer = undefined;
+    }
+  }
+
+  function markProjectDirty(message: string): void {
+    projectAutoSaveDirty = true;
+
+    if (projectLoadHydrationDepth > 0) {
+      return;
+    }
+
+    if (!currentFolderHandle) {
+      setStatus(withProjectWorkflowNote(message));
+      return;
+    }
+
+    clearProjectAutoSaveTimer();
+    setStatus(withProjectWorkflowNote(message));
+    projectAutoSaveTimer = window.setTimeout(() => {
+      void flushProjectAutoSave();
+    }, PROJECT_AUTO_SAVE_DELAY_MS);
+  }
+
+  async function flushProjectAutoSave(): Promise<void> {
+    if (
+      projectAutoSaveInFlight ||
+      !projectAutoSaveDirty ||
+      !currentFolderHandle ||
+      !currentProjectFile
+    ) {
+      return;
+    }
+
+    clearProjectAutoSaveTimer();
+    projectAutoSaveInFlight = true;
+
+    try {
+      const serializedProjectFile = serializeBilddatenProjectFile(currentProjectFile);
+      const result = await writeProjectFileToCurrentFolder(serializedProjectFile, {
+        confirmOverwrite: false,
+      });
+
+      if (result === "saved") {
+        projectAutoSaveDirty = false;
+        projectAutoSaveInFlight = false;
+        setStatus(withProjectWorkflowNote("Projekt gespeichert."));
+        return;
+      }
+
+      if (result === "cancelled") {
+        projectAutoSaveDirty = true;
+        return;
+      }
+
+      setStatus("Fehler beim Speichern - bitte manuell exportieren.");
+    } finally {
+      projectAutoSaveInFlight = false;
+    }
+  }
+
+  function appendProjectWarnings(message: string, warnings: string[]): string {
+    if (!warnings || warnings.length === 0) {
+      return message;
+    }
+
+    return `${message} ${warnings.join(" ")}`;
+  }
+
+  function getCollapsedSectionsSnapshot(): string[] {
+    return getCollapsedSections();
   }
 
   async function readProjectFileText(file: File): Promise<string> {
@@ -545,16 +753,32 @@ function initTaskpane() {
 
   async function readProjectFileFromFolderHandle(
     folderHandle: ProjectFolderHandle
-  ): Promise<"missing" | "invalid" | BilddatenProjectFile> {
-    try {
-      const fileHandle = await folderHandle.getFileHandle(PROJECT_FILE_NAME, { create: false });
-      const file = await fileHandle.getFile();
-      const rawText = await file.text();
-      const projectFile = parseBilddatenProjectFile(rawText);
-      return projectFile || "invalid";
-    } catch {
-      return "missing";
+  ): Promise<"missing" | "invalid" | ProjectParseResult> {
+    const candidateNames = [PROJECT_FILE_NAME, ...LEGACY_PROJECT_FILE_NAMES];
+    let sawInvalidProjectFile = false;
+
+    for (const fileName of candidateNames) {
+      try {
+        const fileHandle = await folderHandle.getFileHandle(fileName, { create: false });
+        const file = await fileHandle.getFile();
+        const rawText = await file.text();
+        const projectParseResult = parseBilddatenProjectFile(rawText);
+        if (!projectParseResult) {
+          sawInvalidProjectFile = true;
+          continue;
+        }
+
+        return projectParseResult;
+      } catch {
+        continue;
+      }
     }
+
+    if (sawInvalidProjectFile) {
+      return "invalid";
+    }
+
+    return "missing";
   }
 
   async function autoLoadProjectFileFromCurrentFolder(): Promise<string | undefined> {
@@ -564,19 +788,33 @@ function initTaskpane() {
 
     const projectFileResult = await readProjectFileFromFolderHandle(currentFolderHandle);
     if (projectFileResult === "missing") {
+      if (currentProjectFile) {
+        return withProjectWorkflowNote(
+          "Keine Projektdatei gefunden. Neue Projektdatei vorbereitet."
+        );
+      }
+
       return undefined;
     }
 
     if (projectFileResult === "invalid") {
-      return "bilddaten.json konnte nicht geladen werden.";
+      return withProjectWorkflowNote(`${PROJECT_FILE_NAME} konnte nicht geladen werden.`);
     }
 
-    const result = applyProjectFileToLoadedImages(projectFileResult);
-    return buildProjectSummaryMessage(`bilddaten.json automatisch geladen`, result);
+    const result = applyProjectFileToLoadedImages(projectFileResult.projectFile);
+    projectAutoSaveDirty = false;
+    clearProjectAutoSaveTimer();
+    const loadPrefix =
+      projectFileResult.format === "legacy"
+        ? "Legacy-Bilddaten geladen und in neues Projektformat übernommen"
+        : "Projektdatei geladen";
+    const summary = buildProjectSummaryMessage(loadPrefix, result);
+    return withProjectWorkflowNote(appendProjectWarnings(summary, projectFileResult.warnings));
   }
 
   async function writeProjectFileToCurrentFolder(
-    serializedProjectFile: string
+    serializedProjectFile: string,
+    options: { confirmOverwrite?: boolean } = {}
   ): Promise<"saved" | "cancelled" | "failed"> {
     if (!currentFolderHandle) {
       return "failed";
@@ -591,9 +829,9 @@ function initTaskpane() {
         existingFile = false;
       }
 
-      if (existingFile) {
+      if (existingFile && options.confirmOverwrite !== false) {
         const overwrite = window.confirm(
-          "bilddaten.json existiert bereits. Soll die Datei überschrieben werden?"
+          `${PROJECT_FILE_NAME} existiert bereits. Soll die Datei überschrieben werden?`
         );
         if (!overwrite) {
           setStatus("Speichern abgebrochen.");
@@ -609,13 +847,13 @@ function initTaskpane() {
       await writable.close();
       return "saved";
     } catch (error) {
-      console.error("Fehler beim Speichern von bilddaten.json:", error);
-      setStatus("Schreibzugriff auf den Bildordner fehlgeschlagen. Download-Fallback wird verwendet.");
+      console.error(`Fehler beim Speichern von ${PROJECT_FILE_NAME}:`, error);
+      setStatus("Direkter Schreibzugriff nicht verfügbar. Export erforderlich.");
       return "failed";
     }
   }
 
-  function downloadProjectFile(serializedProjectFile: string): boolean {
+  function downloadProjectFile(serializedProjectFile: string, suggestedName: string): boolean {
     try {
       const blob = new Blob([serializedProjectFile], {
         type: "application/json;charset=utf-8",
@@ -623,7 +861,7 @@ function initTaskpane() {
       const url = URL.createObjectURL(blob);
       const anchor = document.createElement("a");
       anchor.href = url;
-      anchor.download = PROJECT_FILE_NAME;
+      anchor.download = suggestedName;
       anchor.style.display = "none";
       document.body.appendChild(anchor);
       anchor.click();
@@ -637,20 +875,26 @@ function initTaskpane() {
   }
 
   async function saveProjectFile(): Promise<void> {
-    if (imageItems.length === 0) {
-      setStatus("Keine Bilder zum Speichern vorhanden.");
-      return;
-    }
-
-    const projectFile = buildBilddatenProjectFile(imageItems, sortMode, currentProjectCreatedAt);
+    const snapshot = buildProjectSaveSnapshot();
+    const projectFile = buildBilddatenProjectFile(
+      imageItems,
+      sortMode,
+      currentProjectCreatedAt,
+      currentProjectFile,
+      snapshot
+    );
     const serializedProjectFile = serializeBilddatenProjectFile(projectFile);
+    const suggestedName = getSuggestedProjectFileName(projectFile);
+    currentProjectFile = projectFile;
 
     if (currentFolderHandle) {
       const saveResult = await writeProjectFileToCurrentFolder(serializedProjectFile);
       if (saveResult === "saved" || saveResult === "cancelled") {
         currentProjectCreatedAt = projectFile.createdAt;
         if (saveResult === "saved") {
-          setStatus(`bilddaten.json wurde im aktuellen Ordner gespeichert.`);
+          projectAutoSaveDirty = false;
+          clearProjectAutoSaveTimer();
+          setStatus(withProjectWorkflowNote("Projekt gespeichert."));
         }
         return;
       }
@@ -660,7 +904,7 @@ function initTaskpane() {
     if (typeof savePicker === "function") {
       try {
         const fileHandle = await savePicker({
-          suggestedName: PROJECT_FILE_NAME,
+          suggestedName,
           types: [
             {
               description: "WERKHAUS Bilddaten",
@@ -675,17 +919,21 @@ function initTaskpane() {
         await writable.write(serializedProjectFile);
         await writable.close();
         currentProjectCreatedAt = projectFile.createdAt;
-        setStatus(`bilddaten.json wurde gespeichert.`);
+        projectAutoSaveDirty = false;
+        clearProjectAutoSaveTimer();
+        setStatus(withProjectWorkflowNote("Projekt gespeichert."));
         return;
       } catch (error) {
         console.warn("Speichern über showSaveFilePicker fehlgeschlagen oder abgebrochen:", error);
       }
     }
 
-    const downloaded = downloadProjectFile(serializedProjectFile);
+    const downloaded = downloadProjectFile(serializedProjectFile, suggestedName);
     if (downloaded) {
       currentProjectCreatedAt = projectFile.createdAt;
-      setStatus(`bilddaten.json wurde als Download erzeugt.`);
+      projectAutoSaveDirty = false;
+      clearProjectAutoSaveTimer();
+      setStatus(withProjectWorkflowNote("Projekt exportiert."));
       return;
     }
 
@@ -693,15 +941,21 @@ function initTaskpane() {
   }
 
   async function loadProjectFromText(rawText: string, sourceLabel: string): Promise<void> {
-    const projectFile = parseBilddatenProjectFile(rawText);
-    if (!projectFile) {
-      setStatus(`${sourceLabel}: bilddaten.json konnte nicht gelesen werden.`);
+    const projectParseResult = parseBilddatenProjectFile(rawText);
+    if (!projectParseResult) {
+      setStatus(`${sourceLabel}: ${PROJECT_FILE_NAME} konnte nicht gelesen werden.`);
       return;
     }
 
-    const result = applyProjectFileToLoadedImages(projectFile);
-    const summary = buildProjectSummaryMessage(sourceLabel, result);
-    setStatus(summary);
+    const result = applyProjectFileToLoadedImages(projectParseResult.projectFile);
+    projectAutoSaveDirty = false;
+    clearProjectAutoSaveTimer();
+    const loadPrefix =
+      projectParseResult.format === "legacy"
+        ? "Legacy-Bilddaten geladen und in neues Projektformat übernommen"
+        : "Projektdatei geladen";
+    const summary = buildProjectSummaryMessage(loadPrefix, result);
+    setStatus(withProjectWorkflowNote(appendProjectWarnings(summary, projectParseResult.warnings)));
   }
 
   async function loadProjectFromSelectedFile(file: File, sourceLabel: string): Promise<void> {
@@ -710,7 +964,7 @@ function initTaskpane() {
       await loadProjectFromText(rawText, sourceLabel);
     } catch (error) {
       console.error("Fehler beim Laden der Projektdatei:", error);
-      setStatus(`${sourceLabel}: bilddaten.json konnte nicht gelesen werden.`);
+      setStatus(`${sourceLabel}: ${PROJECT_FILE_NAME} konnte nicht gelesen werden.`);
     }
   }
 
@@ -727,6 +981,7 @@ function initTaskpane() {
       item.position = index + 1;
       setMeta(item.hash, { position: item.position });
     });
+    refreshCurrentProjectFile();
   }
 
   function clearImageList() {
@@ -749,6 +1004,8 @@ function initTaskpane() {
     resetInputValue(imageUpload, "imageUpload");
     resetInputValue(folderUpload, "folderUpload");
 
+    refreshCurrentProjectFile();
+    markProjectDirty("Bildliste geleert. Projekt wird gespeichert...");
     renderImageList();
     setStatus("Bildliste geleert.");
   }
@@ -768,6 +1025,11 @@ function initTaskpane() {
     }
   }
 
+  function noteProjectStateChange(message: string): void {
+    refreshCurrentProjectFile();
+    markProjectDirty(message);
+  }
+
   function getSelectedItems(): ImageItem[] {
     return imageItems.filter((item) => item.selected !== false);
   }
@@ -778,6 +1040,9 @@ function initTaskpane() {
       setMeta(item.hash, { selected });
     });
 
+    noteProjectStateChange(
+      selected ? "Alle Bilder sind ausgewählt." : "Alle Bilder sind abgewählt."
+    );
     renderImageList();
     setStatus(selected ? "Alle Bilder sind ausgewählt." : "Alle Bilder sind abgewählt.");
   }
@@ -842,11 +1107,38 @@ function initTaskpane() {
       imageItems = importResult.items;
       applySortModeToItems({ render: false });
 
+      if (!currentProjectFile && imageItems.length > 0) {
+        currentProjectFile = buildBilddatenProjectFile(
+          imageItems,
+          sortMode,
+          currentProjectCreatedAt,
+          undefined,
+          buildProjectSaveSnapshot()
+        );
+        currentProjectCreatedAt = currentProjectFile.createdAt;
+      }
+
       resetInputValue(imageUpload, "imageUpload");
       resetInputValue(folderUpload, "folderUpload");
 
+      let statusMessage = buildImportStatus(importResult);
+      if (currentProjectFile) {
+        const projectResult = applyProjectFileToLoadedImages(currentProjectFile);
+        statusMessage = `${statusMessage} ${buildProjectSummaryMessage("Projektdatei", projectResult)}`;
+      }
+
       renderImageList();
-      setStatus(buildImportStatus(importResult));
+
+      if (!currentFolderHandle && currentProjectFile && importResult.imageFileCount > 0) {
+        statusMessage = `${statusMessage} Neue Projektdatei vorbereitet. Direkter Schreibzugriff nicht verfügbar. Export erforderlich.`;
+      }
+
+      if (currentFolderHandle && projectLoadHydrationDepth === 0 && currentProjectFile) {
+        noteProjectStateChange("Projekt wurde aktualisiert.");
+        statusMessage = `${statusMessage} Auto-Save aktiv.`;
+      }
+
+      setStatus(statusMessage);
     } catch (error) {
       console.error(error);
       setStatus("Fehler beim Laden der Bilder.");
@@ -995,6 +1287,7 @@ function initTaskpane() {
       selectCheckbox.addEventListener("change", () => {
         item.selected = selectCheckbox.checked;
         setMeta(item.hash, { selected: selectCheckbox.checked });
+        noteProjectStateChange("Auswahl geändert.");
       });
 
       const selectLabelText = document.createElement("span");
@@ -1098,6 +1391,7 @@ function initTaskpane() {
           caption: target.value,
           position: item.position,
         });
+        noteProjectStateChange("Beschriftung geändert.");
       });
 
       captionContainer.appendChild(captionLabel);
@@ -1158,6 +1452,7 @@ function initTaskpane() {
     }
 
     persistImagePositions();
+    noteProjectStateChange("Bildreihenfolge geändert.");
 
     renderImageList();
   }
@@ -1280,6 +1575,8 @@ function initTaskpane() {
 
         if (files.length > 0) {
           currentFolderHandle = null;
+          clearProjectAutoSaveTimer();
+          projectAutoSaveDirty = false;
           await appendFiles(files);
         }
 
@@ -1297,38 +1594,44 @@ function initTaskpane() {
 
     if (typeof nativeDirPicker === "function") {
       try {
-        const dirHandle = await nativeDirPicker();
-        currentFolderHandle = dirHandle;
-        const files: File[] = [];
+        await runWithProjectLoadSuspended(async () => {
+          const dirHandle = await nativeDirPicker();
+          currentFolderHandle = dirHandle;
+          currentProjectFile = undefined;
+          currentProjectCreatedAt = new Date().toISOString();
+          clearProjectAutoSaveTimer();
+          projectAutoSaveDirty = false;
+          const files: File[] = [];
 
-        async function traverseDirectory(handle: any, relativePrefix = "") {
-          for await (const entry of handle.values()) {
-            const entryPath = relativePrefix ? `${relativePrefix}/${entry.name}` : entry.name;
+          async function traverseDirectory(handle: any, relativePrefix = "") {
+            for await (const entry of handle.values()) {
+              const entryPath = relativePrefix ? `${relativePrefix}/${entry.name}` : entry.name;
 
-            if (entry.kind === "file") {
-              try {
-                const file: File = await entry.getFile();
-                (file as File & { relativePath?: string }).relativePath = entryPath;
-                files.push(file);
-              } catch (err) {
-                console.warn("Fehler beim Lesen einer Datei aus dem Ordner-Handle:", err);
+              if (entry.kind === "file") {
+                try {
+                  const file: File = await entry.getFile();
+                  (file as File & { relativePath?: string }).relativePath = entryPath;
+                  files.push(file);
+                } catch (err) {
+                  console.warn("Fehler beim Lesen einer Datei aus dem Ordner-Handle:", err);
+                }
+              } else if (entry.kind === "directory") {
+                await traverseDirectory(entry, entryPath);
               }
-            } else if (entry.kind === "directory") {
-              await traverseDirectory(entry, entryPath);
             }
           }
-        }
 
-        await traverseDirectory(dirHandle);
+          await traverseDirectory(dirHandle);
 
-        if (files.length > 0) {
-          await appendFiles(files);
-        }
+          if (files.length > 0) {
+            await appendFiles(files);
+          }
 
-        const projectSummary = await autoLoadProjectFileFromCurrentFolder();
-        if (projectSummary) {
-          setStatus(projectSummary);
-        }
+          const projectSummary = await autoLoadProjectFileFromCurrentFolder();
+          if (projectSummary) {
+            setStatus(projectSummary);
+          }
+        });
 
         return;
       } catch (err) {
@@ -1389,6 +1692,10 @@ function initTaskpane() {
     }
 
     currentFolderHandle = null;
+    currentProjectFile = undefined;
+    currentProjectCreatedAt = new Date().toISOString();
+    clearProjectAutoSaveTimer();
+    projectAutoSaveDirty = false;
     await appendFiles(droppedFiles);
   });
 
@@ -1415,6 +1722,10 @@ function initTaskpane() {
     }
 
     currentFolderHandle = null;
+    currentProjectFile = undefined;
+    currentProjectCreatedAt = new Date().toISOString();
+    clearProjectAutoSaveTimer();
+    projectAutoSaveDirty = false;
     await appendFiles(imageUpload.files);
   });
 
@@ -1425,6 +1736,10 @@ function initTaskpane() {
     }
 
     currentFolderHandle = null;
+    currentProjectFile = undefined;
+    currentProjectCreatedAt = new Date().toISOString();
+    clearProjectAutoSaveTimer();
+    projectAutoSaveDirty = false;
     await appendFiles(Array.from(folderUpload.files));
   });
 
@@ -1509,11 +1824,13 @@ function initTaskpane() {
   toggleInfoButton?.addEventListener("click", () => {
     showInfo = !showInfo;
     updateVisibilityUI();
+    noteProjectStateChange("Bild-Infos geändert.");
   });
 
   toggleCaptionButton?.addEventListener("click", () => {
     showCaptions = !showCaptions;
     updateVisibilityUI();
+    noteProjectStateChange("Beschriftungsanzeige geändert.");
   });
 
   expandAllSectionsButton?.addEventListener("click", () => {
@@ -1535,6 +1852,7 @@ function initTaskpane() {
 
     setCurrentSortMode(nextMode);
     applySortModeToItems();
+    noteProjectStateChange("Sortierung geändert.");
   });
 
   updatePreviewSize();

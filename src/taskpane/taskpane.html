@@ -94,15 +94,27 @@
         </div>
         <div class="section-body">
           <div class="toolbar-row button-bar">
-            <button id="saveProjectButton" type="button">Speichern</button>
-            <button id="loadProjectButton" type="button">Laden</button>
+            <button
+              id="saveProjectButton"
+              type="button"
+              title="Aktuelle Projekt-JSON speichern oder exportieren."
+            >
+              JSON speichern
+            </button>
+            <button
+              id="loadProjectButton"
+              type="button"
+              title="Projekt-JSON laden oder wiederherstellen."
+            >
+              JSON laden
+            </button>
             <button id="toggleInfoButton" type="button">Bild Infos</button>
             <button id="toggleCaptionButton" type="button">Beschriftung</button>
           </div>
 
           <div class="status-inline">
             <div class="status-inline-label">Status</div>
-            <div id="statusMessage" class="status-box">Bereit.</div>
+            <div id="statusMessage" class="status-box">Bereit. Bildordner laden oder JSON öffnen.</div>
           </div>
 
           <input

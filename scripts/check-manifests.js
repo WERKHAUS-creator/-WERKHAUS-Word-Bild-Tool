@@ -2,6 +2,8 @@ const fs = require("fs");
 
 const DEV_MANIFEST = "manifest.dev.xml";
 const PRODUCTION_MANIFEST = "manifest.xml";
+const PACKAGE_JSON = "package.json";
+const PACKAGE_LOCK = "package-lock.json";
 const DEV_URL = "https://localhost:3001";
 const PRODUCTION_URL = "https://tool2.wh-sv.de";
 
@@ -25,8 +27,14 @@ function assertDoesNotContain(content, forbidden, path) {
   }
 }
 
+function readJson(path) {
+  return JSON.parse(readManifest(path));
+}
+
 const localManifest = readManifest(DEV_MANIFEST);
 const productionManifest = readManifest(PRODUCTION_MANIFEST);
+const packageVersion = readJson(PACKAGE_JSON).version;
+const packageLock = readJson(PACKAGE_LOCK);
 
 assertContains(localManifest, DEV_URL, DEV_MANIFEST);
 assertDoesNotContain(localManifest, PRODUCTION_URL, DEV_MANIFEST);
@@ -47,6 +55,18 @@ if (!devVersionMatch || !prodVersionMatch) {
 
 if (devVersionMatch[1] !== prodVersionMatch[1]) {
   throw new Error("DEV- und Produktionsmanifest muessen dieselbe Version haben.");
+}
+
+if (devVersionMatch[1] !== packageVersion) {
+  throw new Error("package.json und Manifeste muessen dieselbe Version haben.");
+}
+
+if (packageLock.version !== packageVersion) {
+  throw new Error("package-lock.json und package.json muessen dieselbe Version haben.");
+}
+
+if (!packageLock.packages || !packageLock.packages[""] || packageLock.packages[""].version !== packageVersion) {
+  throw new Error("package-lock.json package version ist nicht synchron.");
 }
 
 const devIdMatch = localManifest.match(/<Id>([^<]+)<\/Id>/);

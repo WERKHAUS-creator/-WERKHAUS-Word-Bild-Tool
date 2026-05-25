@@ -3,6 +3,7 @@ export interface ImageItem {
   key: string;
   name: string;
   relativePath?: string;
+  fullPath?: string;
   size: number;
   lastModified?: number;
   base64: string;
@@ -11,6 +12,9 @@ export interface ImageItem {
   caption: string;
   position: number;
   selected: boolean;
+  visible?: boolean;
+  location?: string;
+  imageNumber?: string;
   includeCaptionInWord: boolean;
   exif?: {
     dateTimeOriginal?: string;
