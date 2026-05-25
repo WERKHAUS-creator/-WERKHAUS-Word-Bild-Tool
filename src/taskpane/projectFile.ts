@@ -9,7 +9,7 @@ const LEGACY_PROJECT_SCHEMA_VERSION = 1;
 const DEFAULT_DOCUMENT_BASIS = "Blanco-Dokument";
 const DEFAULT_OUTPUT_BASENAME = "werkhaus_bildprojekt";
 const DEFAULT_PREVIEW_SIZE_PX = 120;
-const DEFAULT_TOOL_VERSION = "1.0.0.6";
+const DEFAULT_TOOL_VERSION = "1.0.0.7";
 
 const DEFAULT_ANALYSIS_PROFILES = {
   allgemein: {

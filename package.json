@@ -1,6 +1,6 @@
 {
   "name": "werkhaus-word-bild",
-  "version": "1.0.0.6",
+  "version": "1.0.0.7",
   "license": "MIT",
   "config": {
     "app_to_debug": "word",
