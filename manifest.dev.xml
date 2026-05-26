@@ -73,20 +73,20 @@
 
     <Resources>
       <bt:Images>
-        <bt:Image id="Commands.Icon.16" DefaultValue="https://localhost:3001/assets/icon-16.png"/>
-        <bt:Image id="Commands.Icon.32" DefaultValue="https://localhost:3001/assets/icon-32.png"/>
-        <bt:Image id="Commands.Icon.80" DefaultValue="https://localhost:3001/assets/icon-80 2.png"/>
+        <bt:Image id="Commands.Icon.16" DefaultValue="https://localhost:3001/assets/werkhaus-16.png"/>
+        <bt:Image id="Commands.Icon.32" DefaultValue="https://localhost:3001/assets/werkhaus-32.png"/>
+        <bt:Image id="Commands.Icon.80" DefaultValue="https://localhost:3001/assets/werkhaus-80.png"/>
       </bt:Images>
       <bt:Urls>
         <bt:Url id="Commands.Url" DefaultValue="https://localhost:3001/commands.html"/>
         <bt:Url id="Taskpane.Url" DefaultValue="https://localhost:3001/taskpane.html"/>
       </bt:Urls>
       <bt:ShortStrings>
-        <bt:String id="Commands.GroupLabel" DefaultValue="WERKHAUS Word &amp; Bild"/>
-        <bt:String id="Commands.ButtonLabel" DefaultValue="Bild-Tool öffnen"/>
+        <bt:String id="Commands.GroupLabel" DefaultValue="Werkhaus Word &amp; Bild"/>
+        <bt:String id="Commands.ButtonLabel" DefaultValue="Werkhaus Word &amp; Bild"/>
       </bt:ShortStrings>
       <bt:LongStrings>
-        <bt:String id="Commands.ButtonTooltip" DefaultValue="Öffnet das WERKHAUS Word &amp; Bild Taskpane."/>
+        <bt:String id="Commands.ButtonTooltip" DefaultValue="Öffnet das Werkhaus Word &amp; Bild-Taskpane."/>
       </bt:LongStrings>
     </Resources>
   </VersionOverrides>
